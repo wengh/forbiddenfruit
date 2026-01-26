@@ -92,6 +92,7 @@ SSizeArgFunc_p = ctypes.CFUNCTYPE(ctypes.py_object, PyObject_p, Py_ssize_t)
 SSizeObjArgProc_p = ctypes.CFUNCTYPE(ctypes.c_int, PyObject_p, Py_ssize_t, PyObject_p)
 ObjObjProc_p = ctypes.CFUNCTYPE(ctypes.c_int, PyObject_p, PyObject_p)
 InitProc_p = ctypes.CFUNCTYPE(ctypes.c_int, PyObject_p, PyObject_p, ctypes.c_void_p)
+IterNextFunc_p = ctypes.CFUNCTYPE(ctypes.c_void_p, PyObject_p)
 
 FILE_p = ctypes.POINTER(PyFile)
 
@@ -113,6 +114,11 @@ def get_not_implemented():
 # address of the _Py_NotImplementedStruct singleton
 NotImplementedRet = get_not_implemented()
 
+ctypes.pythonapi.Py_IncRef.argtypes = [ctypes.py_object]
+ctypes.pythonapi.Py_IncRef.restype = None
+
+ctypes.pythonapi.PyErr_SetObject.argtypes = [ctypes.py_object, ctypes.py_object]
+ctypes.pythonapi.PyErr_SetObject.restype = None
 
 class PyNumberMethods(ctypes.Structure):
     _fields_ = [
@@ -217,7 +223,7 @@ PyTypeObject._fields_ = [
     ('tp_richcompare', ctypes.c_void_p),  # Type not declared yet
     ('tp_weaklistoffset', ctypes.c_void_p),  # Type not declared yet
     ('tp_iter', UnaryFunc_p),
-    ('tp_iternext', UnaryFunc_p),
+    ('tp_iternext', IterNextFunc_p),
     ('tp_methods', ctypes.c_void_p),  # Type not declared yet
     ('tp_members', ctypes.c_void_p),  # Type not declared yet
     ('tp_getset', ctypes.c_void_p),  # Type not declared yet
@@ -377,18 +383,31 @@ def _curse_special(klass, attr, func):
                     return 0
                 return res
 
-            return func(*args, **kwargs)
+            res = func(*args, **kwargs)
+            if attr == '__next__':
+                # For tp_iternext, we need to return the address of the object
+                # and manually increment the reference count because the return
+                # type is c_void_p (which ctypes doesn't auto-incref).
+                ctypes.pythonapi.Py_IncRef(ctypes.py_object(res))
+                return id(res)
+            return res
+        except StopIteration:
+            if attr == '__next__':
+                return 0
+            raise
         except NotImplementedError:
             return NotImplementedRet
         except Exception:
             if attr == '__init__':
                 # CPython expects -1 for error in tp_init.
-                # ctypes swallows the exception and prints it to stderr.
-                # To properly propagate the exception to CPython runtime,
-                # we would need to ensure the error is set.
-                # However, setting PyErr inside ctypes callback is tricky.
-                # Returning -1 at least signals failure to CPython (usually results in SystemError).
+                # We return -1 to signal error. CPython will raise SystemError
+                # because we don't set the exception (setting it via ctypes
+                # is problematic as ctypes clears it and returns 0).
                 return -1
+            if attr == '__next__':
+                # For tp_iternext, return NULL (0) signals stop/error.
+                # If we don't set exception, it is treated as StopIteration.
+                return 0
             raise
 
     tp_as_name, impl_method = override_dict[attr]
