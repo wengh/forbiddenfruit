@@ -91,8 +91,6 @@ LenFunc_p = ctypes.CFUNCTYPE(Py_ssize_t, PyObject_p)
 SSizeArgFunc_p = ctypes.CFUNCTYPE(ctypes.py_object, PyObject_p, Py_ssize_t)
 SSizeObjArgProc_p = ctypes.CFUNCTYPE(ctypes.c_int, PyObject_p, Py_ssize_t, PyObject_p)
 ObjObjProc_p = ctypes.CFUNCTYPE(ctypes.c_int, PyObject_p, PyObject_p)
-InitProc_p = ctypes.CFUNCTYPE(ctypes.c_int, PyObject_p, PyObject_p, ctypes.c_void_p)
-IterNextFunc_p = ctypes.CFUNCTYPE(ctypes.c_void_p, PyObject_p)
 
 FILE_p = ctypes.POINTER(PyFile)
 
@@ -113,12 +111,6 @@ def get_not_implemented():
 
 # address of the _Py_NotImplementedStruct singleton
 NotImplementedRet = get_not_implemented()
-
-ctypes.pythonapi.Py_IncRef.argtypes = [ctypes.py_object]
-ctypes.pythonapi.Py_IncRef.restype = None
-
-ctypes.pythonapi.PyErr_SetObject.argtypes = [ctypes.py_object, ctypes.py_object]
-ctypes.pythonapi.PyErr_SetObject.restype = None
 
 class PyNumberMethods(ctypes.Structure):
     _fields_ = [
@@ -222,8 +214,8 @@ PyTypeObject._fields_ = [
     ('tp_clear', ctypes.c_void_p),  # Type not declared yet
     ('tp_richcompare', ctypes.c_void_p),  # Type not declared yet
     ('tp_weaklistoffset', ctypes.c_void_p),  # Type not declared yet
-    ('tp_iter', UnaryFunc_p),
-    ('tp_iternext', IterNextFunc_p),
+    ('tp_iter', ctypes.c_void_p),  # Type not declared yet
+    ('iternextfunc', ctypes.c_void_p),  # Type not declared yet
     ('tp_methods', ctypes.c_void_p),  # Type not declared yet
     ('tp_members', ctypes.c_void_p),  # Type not declared yet
     ('tp_getset', ctypes.c_void_p),  # Type not declared yet
@@ -232,7 +224,7 @@ PyTypeObject._fields_ = [
     ('tp_descr_get', ctypes.c_void_p),  # Type not declared yet
     ('tp_descr_set', ctypes.c_void_p),  # Type not declared yet
     ('tp_dictoffset', ctypes.c_void_p),  # Type not declared yet
-    ('tp_init', InitProc_p),
+    ('tp_init', ctypes.c_void_p),  # Type not declared yet
     ('tp_alloc', ctypes.c_void_p),  # Type not declared yet
     ('tp_new', ctypes.CFUNCTYPE(PyObject_p, PyObject_p, PyObject_p, ctypes.c_void_p)),
     # More struct fields follow but aren't declared here yet ...
@@ -336,10 +328,7 @@ for override in [as_number, as_sequence, as_async]:
 override_dict['divmod()'] = ('tp_as_number', "nb_divmod")
 override_dict['__str__'] = ('tp_str', "tp_str")
 override_dict['__new__'] = ('tp_new', "tp_new")
-override_dict['__init__'] = ('tp_init', "tp_init")
 override_dict['__hash__'] = ('tp_hash', "tp_hash")
-override_dict['__iter__'] = ('tp_iter', "tp_iter")
-override_dict['__next__'] = ('tp_iternext', "tp_iternext")
 
 
 def _is_dunder(func_name):
@@ -360,55 +349,9 @@ def _curse_special(klass, attr, func):
         python integer which is then converted to a pointer by ctypes
         """
         try:
-            if attr == '__init__':
-                # tp_init signature is (self, args, kwds)
-                # where args is a tuple and kwds is a dict (or NULL)
-                # We unpack them to allow standard __init__ definition
-                self_obj = args[0]
-                args_tuple = args[1]
-                kwds_addr = args[2]
-
-                kwds = None
-                if kwds_addr:
-                    kwds = ctypes.cast(kwds_addr, ctypes.py_object).value
-
-                # If kwds is None, we pass empty dict if we use **kwds,
-                # but better to handle it carefully.
-                if kwds is None:
-                    res = func(self_obj, *args_tuple)
-                else:
-                    res = func(self_obj, *args_tuple, **kwds)
-
-                if res is None:
-                    return 0
-                return res
-
-            res = func(*args, **kwargs)
-            if attr == '__next__':
-                # For tp_iternext, we need to return the address of the object
-                # and manually increment the reference count because the return
-                # type is c_void_p (which ctypes doesn't auto-incref).
-                ctypes.pythonapi.Py_IncRef(ctypes.py_object(res))
-                return id(res)
-            return res
-        except StopIteration:
-            if attr == '__next__':
-                return 0
-            raise
+            return func(*args, **kwargs)
         except NotImplementedError:
             return NotImplementedRet
-        except Exception:
-            if attr == '__init__':
-                # CPython expects -1 for error in tp_init.
-                # We return -1 to signal error. CPython will raise SystemError
-                # because we don't set the exception (setting it via ctypes
-                # is problematic as ctypes clears it and returns 0).
-                return -1
-            if attr == '__next__':
-                # For tp_iternext, return NULL (0) signals stop/error.
-                # If we don't set exception, it is treated as StopIteration.
-                return 0
-            raise
 
     tp_as_name, impl_method = override_dict[attr]
 
