@@ -447,7 +447,6 @@ def curse(klass, attr, value, hide_from_dir=False):
             raise NotImplementedError(
                 "Dunder overloading is only supported on Python >= 3.3")
         _curse_special(klass, attr, value)
-        return
 
     dikt = patchable_builtin(klass)
 
