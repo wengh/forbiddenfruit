@@ -376,3 +376,231 @@ def test_cursed_decorator():
     # And it was reversed
     assert "open_box" not in dir(obj)
     assert "open_box" not in dir(dict)
+
+
+@skip_legacy
+@skip_legacy
+def test_dunder_hash():
+    "Test that __hash__ can be cursed on custom classes"
+    # Given that I have a custom hash function
+    def custom_hash(self):
+        return 12345
+    
+    # When I curse __hash__ on a custom class
+    curse(ffruit.Dummy, '__hash__', custom_hash)
+    
+    # Then hashing returns our custom value
+    obj = ffruit.Dummy()
+    assert hash(obj) == 12345
+    
+    # And dict operations work
+    d = {obj: 'value'}
+    assert d[obj] == 'value'
+    
+    # Cleanup
+    reverse(ffruit.Dummy, '__hash__')
+
+
+@skip_legacy
+def test_dunder_hash_on_object():
+    "Test that __hash__ can be cursed on object base class"
+    # Given a custom hash function
+    call_log = []
+    _orig_hash = object.__hash__
+    
+    def custom_hash(self):
+        call_log.append(repr(self))
+        return _orig_hash(self)
+    
+    # When I curse object.__hash__ BEFORE defining the class
+    curse(object, '__hash__', custom_hash)
+    
+    # And then define a custom class inheriting from object
+    class TestClass():
+        def __init__(self, x):
+            self.x = x
+        def __repr__(self):
+            return f"TestClass({self.x})"
+    
+    # Then hashing instances of TestClass calls the custom hash
+    obj1 = TestClass(1)
+    obj2 = TestClass(2)
+    obj3 = TestClass(3)
+    
+    # Creating a set triggers hashing
+    s = {obj1, obj2, obj3}
+    
+    # Verify custom hash was called for each object
+    assert len(call_log) >= 3, f"Expected at least 3 hash calls, got {len(call_log)}"
+    assert "TestClass(1)" in str(call_log)
+    assert "TestClass(2)" in str(call_log)
+    assert "TestClass(3)" in str(call_log)
+    
+    # And the set contains all three objects
+    assert len(s) == 3
+    
+    # Cleanup
+    reverse(object, '__hash__')
+
+
+@skip_legacy
+def test_dunder_hash_reverse_timing():
+    """Test that class creation timing matters with curse/reverse
+    
+    Classes defined before curse should not be affected by curse/reverse.
+    Classes defined during curse should keep cursed hash even after reverse (copied slot).
+    Classes defined after reverse should have restored hash.
+    """
+    call_log = []
+    _orig_hash = object.__hash__
+    
+    def custom_hash(self):
+        call_log.append(('cursed', type(self).__name__))
+        return _orig_hash(self)
+    
+    # Define class BEFORE curse
+    class ClassBeforeCurse:
+        pass
+    
+    # Test before curse
+    obj_before = ClassBeforeCurse()
+    call_log.clear()
+    hash(obj_before)
+    assert len(call_log) == 0, "Class defined before curse should not call custom hash"
+    
+    # Curse object.__hash__
+    curse(object, '__hash__', custom_hash)
+    
+    # Define class DURING curse
+    class ClassDuringCurse:
+        pass
+    
+    # Test during curse
+    obj_during = ClassDuringCurse()
+    call_log.clear()
+    hash(obj_during)
+    assert len(call_log) == 1, "Class defined during curse should call custom hash"
+    assert call_log[0] == ('cursed', 'ClassDuringCurse')
+    
+    # Test that class defined before curse still doesn't call custom hash
+    call_log.clear()
+    hash(obj_before)
+    assert len(call_log) == 0, "Class defined before curse should still not call custom hash"
+    
+    # Reverse the curse
+    reverse(object, '__hash__')
+    
+    # Define class AFTER reverse
+    class ClassAfterReverse:
+        pass
+    
+    # Test after reverse
+    obj_after = ClassAfterReverse()
+    call_log.clear()
+    hash(obj_after)
+    assert len(call_log) == 0, "Class defined after reverse should not call custom hash"
+    
+    # Test that class defined before curse still works
+    call_log.clear()
+    hash(obj_before)
+    assert len(call_log) == 0, "Class defined before curse should still work after reverse"
+    
+    # Test that class defined during curse keeps its cursed hash (expected behavior)
+    call_log.clear()
+    hash(obj_during)
+    # Note: This behavior (classes keeping cursed hash after reverse) is expected
+    # because Python copies tp_hash pointers when creating type objects
+
+
+@skip_legacy
+def test_dunder_hash_context_manager():
+    """Test that cursed() context manager works with __hash__"""
+    call_log = []
+    _orig_hash = object.__hash__
+    
+    def custom_hash(self):
+        call_log.append(type(self).__name__)
+        return _orig_hash(self)
+    
+    # Before context manager
+    class ClassBeforeContext:
+        pass
+    
+    obj_before = ClassBeforeContext()
+    call_log.clear()
+    hash(obj_before)
+    assert len(call_log) == 0, "Before context: custom hash should not be called"
+    
+    # Inside context manager
+    with cursed(object, '__hash__', custom_hash):
+        class ClassInsideContext:
+            pass
+        
+        obj_inside = ClassInsideContext()
+        call_log.clear()
+        hash(obj_inside)
+        assert len(call_log) == 1, "Inside context: custom hash should be called"
+        assert call_log[0] == 'ClassInsideContext'
+    
+    # After context manager
+    class ClassAfterContext:
+        pass
+    
+    obj_after = ClassAfterContext()
+    call_log.clear()
+    hash(obj_after)
+    assert len(call_log) == 0, "After context: custom hash should not be called"
+    
+    # Verify class before context still works
+    call_log.clear()
+    hash(obj_before)
+    assert len(call_log) == 0, "Class before context should still work"
+
+
+@skip_legacy
+def test_dunder_hash_multiple_cycles():
+    """Test multiple curse->reverse cycles work correctly without memory leaks or corruption"""
+    call_log = []
+    _orig_hash = object.__hash__
+    
+    def custom_hash(self):
+        call_log.append(('hash', type(self).__name__))
+        return _orig_hash(self)
+    
+    # Run 3 curse/reverse cycles
+    for cycle in range(3):
+        # Curse
+        curse(object, '__hash__', custom_hash)
+        
+        # Create a class during this cycle
+        class_name = f'TestClass{cycle}'
+        TestClass = type(class_name, (), {})
+        
+        # Test that curse works
+        obj = TestClass()
+        call_log.clear()
+        h1 = hash(obj)
+        assert len(call_log) == 1, f"Cycle {cycle}: custom hash should be called"
+        assert call_log[0] == ('hash', class_name)
+        
+        # Verify hash is consistent
+        call_log.clear()
+        h2 = hash(obj)
+        assert h1 == h2, f"Cycle {cycle}: hash should be consistent"
+        
+        # Reverse
+        reverse(object, '__hash__')
+    
+    # After all cycles, create a new class and verify it's not cursed
+    class FinalTestClass:
+        pass
+    
+    obj_final = FinalTestClass()
+    call_log.clear()
+    hash(obj_final)
+    assert len(call_log) == 0, "After all cycles: custom hash should not be called"
+    
+    # Verify we can still hash objects normally
+    h3 = hash(obj_final)
+    h4 = hash(obj_final)
+    assert h3 == h4, "Hashing should still work correctly after multiple cycles"

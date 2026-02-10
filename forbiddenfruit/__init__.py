@@ -91,6 +91,7 @@ LenFunc_p = ctypes.CFUNCTYPE(Py_ssize_t, PyObject_p)
 SSizeArgFunc_p = ctypes.CFUNCTYPE(ctypes.py_object, PyObject_p, Py_ssize_t)
 SSizeObjArgProc_p = ctypes.CFUNCTYPE(ctypes.c_int, PyObject_p, Py_ssize_t, PyObject_p)
 ObjObjProc_p = ctypes.CFUNCTYPE(ctypes.c_int, PyObject_p, PyObject_p)
+HashFunc_p = ctypes.CFUNCTYPE(ctypes.c_int64, PyObject_p)
 
 FILE_p = ctypes.POINTER(PyFile)
 
@@ -202,7 +203,7 @@ PyTypeObject._fields_ = [
     ('tp_as_number', ctypes.POINTER(PyNumberMethods)),
     ('tp_as_sequence', ctypes.POINTER(PySequenceMethods)),
     ('tp_as_mapping', ctypes.POINTER(PyMappingMethods)),
-    ('tp_hash', ctypes.CFUNCTYPE(ctypes.c_int64, PyObject_p)),
+    ('tp_hash', HashFunc_p),
     ('tp_call', ctypes.CFUNCTYPE(PyObject_p, PyObject_p, PyObject_p, PyObject_p)),
     ('tp_str', ctypes.CFUNCTYPE(PyObject_p, PyObject_p)),
     ('tp_getattro', ctypes.c_void_p),  # Type not declared yet
@@ -328,6 +329,7 @@ for override in [as_number, as_sequence, as_async]:
 override_dict['divmod()'] = ('tp_as_number', "nb_divmod")
 override_dict['__str__'] = ('tp_str', "tp_str")
 override_dict['__new__'] = ('tp_new', "tp_new")
+override_dict['__hash__'] = ('tp_hash', "tp_hash")
 
 
 def _is_dunder(func_name):
@@ -337,7 +339,7 @@ def _is_dunder(func_name):
 def _curse_special(klass, attr, func):
     """
     Curse one of the "dunder" methods, i.e. methods beginning with __ which have a
-    precial resolution code path
+    special resolution code path
     """
     assert callable(func)
 
@@ -392,6 +394,21 @@ def _curse_special(klass, attr, func):
         cfunc = cfunc_t(wrapper)
         tp_func_dict[(klass, attr)] = cfunc
         setattr(tyobj, impl_method, cfunc)
+    
+    # Also update the type's __dict__ so that subclasses can find the method
+    # This is important for methods like __hash__ that need to be accessible to subclasses
+    dikt = patchable_builtin(klass)
+    
+    # Save the old value from dict before overwriting (like curse() does)
+    old_value = dikt.get(attr, None)
+    old_name = '_c_%s' % attr
+    if old_value:
+        dikt[old_name] = old_value
+    
+    dikt[attr] = func
+    
+    # Notify Python that the type has been modified so it flushes internal caches
+    ctypes.pythonapi.PyType_Modified(ctypes.py_object(klass))
 
 def _revert_special(klass, attr):
     tp_as_name, impl_method = override_dict[attr]
@@ -416,6 +433,20 @@ def _revert_special(klass, attr):
 
             cfunc = tp_as_dict[(klass, attr)]
             setattr(tyobj, impl_method, cfunc)
+    
+    # Restore the original value in the type's __dict__
+    dikt = patchable_builtin(klass)
+    old_name = '_c_%s' % attr
+    if old_name in dikt:
+        # Restore the saved original value
+        dikt[attr] = dikt[old_name]
+        del dikt[old_name]
+    elif attr in dikt:
+        # No saved value, just delete the cursed one
+        del dikt[attr]
+    
+    # Notify Python that the type has been modified so it flushes internal caches
+    ctypes.pythonapi.PyType_Modified(ctypes.py_object(klass))
 
 
 def curse(klass, attr, value, hide_from_dir=False):
